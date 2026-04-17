@@ -29,18 +29,41 @@ void delay_ms(int milliseconds) {
 
 int main() {
     while (1) {
-        set_pixel(255, 0, 0); 
-        rgb_flush();
-        delay_ms(1000); // 1 second delay
-
-        set_pixel(0, 255, 0);
-        rgb_flush();
-        delay_ms(1000); // 1 second delay
-
-        set_pixel(0, 0, 255);
-        rgb_flush();
-        delay_ms(1000); // 1 second delay
-
+        for(int i = 0; i < 256; i++) {
+            set_pixel(i, 0, 0); // Red gradient
+            rgb_flush();
+            delay_ms(10);
+        }
+        for(int i = 0; i < 256; i++) {
+            set_pixel(255, i, 0); // Green gradient
+            rgb_flush();
+            delay_ms(10);
+        }
+        for(int i = 255; i >= 0; i--) {
+            set_pixel(i, 255, 0); // Red fade out
+            rgb_flush();
+            delay_ms(10);
+        }
+        for(int i = 0; i < 256; i++) {
+            set_pixel(0, 255, i); // Blue gradient
+            rgb_flush();
+            delay_ms(10);
+        }
+        for(int i = 255; i >= 0; i--) {
+            set_pixel(0, i, 255); // Green fade out
+            rgb_flush();
+            delay_ms(10);
+        }
+        for(int i = 0; i < 256; i++) {
+            set_pixel(i, 0, 255); // Red gradient
+            rgb_flush();
+            delay_ms(10);
+        }
+        for(int i = 255; i >= 0; i--) {
+            set_pixel(i, 0, 255); // Red fade out
+            rgb_flush();
+            delay_ms(10);
+        }
     }
     return 0;
 }
