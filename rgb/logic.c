@@ -10,7 +10,7 @@ void delay_ms(int milliseconds) {
 
 int main() {
     display_init();
-    display_set_animation(ANIM_THEATER);
+    display_set_animation(ANIM_TWILIGHT);
 
     while (1)
     {

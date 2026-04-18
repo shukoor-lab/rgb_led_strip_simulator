@@ -860,141 +860,105 @@ static void render_anim_moon(void)
 
 /* --------------------------------------------------------------------------------------------------------- */
 
-#define FIRECRACKER_TICK_LEN        65535
+/* Firecracker (reworked using cracker_anim.c algorithm)                                                    */
+/* --------------------------------------------------------------------------------------------------------- */
 
-#define ROCKET_SPEED_TICKS          2
-#define ROCKET_BRIGHTNESS           60
+#define CRACKER_TAIL_END           40
+#define CRACKER_MAX_CONCURRENT     4
+#define CRACKER_EXPLOSION_DECAY    45   /* frames after explosion for decay sparks */
+#define CRACKER_FUSE_FRAMES_PER_LED 3   /* slow fuse: 3 frames per LED */
+#define CRACKER_SPAWN_CHANCE_PER_1000 5 /* 5/1000 chance per tick */
 
-#define SPARK_COUNT                 8
-#define SPARK_MAX_RADIUS            10
-#define SPARK_GROW_SPEED            1
-#define SPARK_FADE_SPEED            3
+typedef struct {
+    uint8_t active;
+    uint16_t frame;
+    uint8_t r, g, b;
+} cracker_t;
 
-#define FIRECRACKER_MIN_DELAY       200
-#define FIRECRACKER_MAX_DELAY       500 
+static cracker_t crackers[CRACKER_MAX_CONCURRENT] = {0};
 
-typedef struct
+/* return pseudo-random number in [min, max] using fast_rand() */
+static uint16_t rand_range_u16(uint16_t min, uint16_t max)
 {
-    uint8_t state;     // 0 idle, 1 rocket, 2 explode
-    uint16_t delay;
+    uint32_t v = ((uint32_t)fast_rand() << 8) | fast_rand();
+    uint16_t range = (max - min + 1);
+    return (uint16_t)(v % range) + min;
+}
 
-    int16_t rocket_pos;
-    uint16_t move_tick;
+static void spawn_cracker_if_needed(void)
+{
+    /* spawn with low probability */
+    uint16_t val = (((uint16_t)fast_rand() << 8) | fast_rand()) % 1000;
+    if (val >= CRACKER_SPAWN_CHANCE_PER_1000) return;
 
-    uint8_t radius;
-    uint8_t max_radius;
-    uint8_t brightness;
-
-    int8_t spark_dir[SPARK_COUNT];   // small directions
-} firecracker_t;
-
-static firecracker_t fire = {0};
+    for (int i = 0; i < CRACKER_MAX_CONCURRENT; i++)
+    {
+        if (!crackers[i].active)
+        {
+            crackers[i].active = 1;
+            crackers[i].frame = 0;
+            crackers[i].r = rand_range_u16(180, 255);
+            crackers[i].g = rand_range_u16(100, 255);
+            crackers[i].b = rand_range_u16(50, 200);
+            break;
+        }
+    }
+}
 
 static void render_anim_firecracker(void)
 {
     ws2812_clear();
 
-    /* ---------- IDLE ---------- */
-    if (fire.state == 0)
+    /* try spawn */
+    spawn_cracker_if_needed();
+
+    for (int ci = 0; ci < CRACKER_MAX_CONCURRENT; ci++)
     {
-        if (fire.delay > 0)
+        cracker_t *c = &crackers[ci];
+        if (!c->active) continue;
+
+        /* --- FUSE / ROCKET TRAVEL: draw ember along linear tail (0..40) --- */
+        if (c->frame <= CRACKER_TAIL_END * CRACKER_FUSE_FRAMES_PER_LED)
         {
-            fire.delay--;
+            int phys_idx = c->frame / CRACKER_FUSE_FRAMES_PER_LED; /* 0..40 */
+            if (phys_idx < 0) phys_idx = 0;
+            if (phys_idx > CRACKER_TAIL_END) phys_idx = CRACKER_TAIL_END;
+
+            float dim = 1.0f - ((float)phys_idx / (float)CRACKER_TAIL_END * 0.75f);
+            uint8_t flicker = fast_rand() & 0x3F;
+
+            uint8_t rr = (uint8_t)((210.0f * dim) + flicker);
+            uint8_t gg = (uint8_t)(100.0f * dim);
+            uint8_t bb = (uint8_t)(20.0f * dim);
+
+            ws2812_set_pixel((uint16_t)phys_idx, rr, gg, bb);
+
+            c->frame++;
+        }
+        /* --- EXPLOSION: flash circle region (41..80) once --- */
+        else if (c->frame == (CRACKER_TAIL_END * CRACKER_FUSE_FRAMES_PER_LED) + 1)
+        {
+            for (int j = 41; j < LED_COUNT; j++)
+            {
+                ws2812_set_pixel((uint16_t)j, c->r, c->g, c->b);
+            }
+            c->frame++;
+        }
+        /* --- DECAY / SPARKS: random sparks in the circle --- */
+        else if (c->frame < (CRACKER_TAIL_END * CRACKER_FUSE_FRAMES_PER_LED) + 1 + CRACKER_EXPLOSION_DECAY)
+        {
+            /* spawn a couple of random sparks per tick */
+            for (int s = 0; s < 2; s++)
+            {
+                uint16_t spark = rand_range_u16(41, LED_COUNT - 1);
+                ws2812_set_pixel(spark, c->r, c->g, c->b);
+            }
+            c->frame++;
         }
         else
         {
-            fire.state = 1;
-            fire.rocket_pos = fast_rand() % 40;   // start in linear strip
-            fire.move_tick = 0;
-        }
-    }
-
-    /* ---------- ROCKET ---------- */
-    else if (fire.state == 1)
-    {
-        fire.move_tick++;
-
-        if (fire.move_tick >= ROCKET_SPEED_TICKS)
-        {
-            fire.move_tick = 0;
-            fire.rocket_pos++;
-        }
-
-        /* draw rocket */
-        if (fire.rocket_pos >= 0 && fire.rocket_pos <= 80)
-        {
-            ws2812_set_pixel(fire.rocket_pos,
-                             ROCKET_BRIGHTNESS,
-                             ROCKET_BRIGHTNESS / 2,
-                             0);
-        }
-
-        /* reached circle */
-        if (fire.rocket_pos >= 41)
-        {
-            fire.state = 2;
-
-            fire.radius = 0;
-            fire.max_radius = 4 + (fast_rand() % SPARK_MAX_RADIUS);
-            fire.brightness = 100;
-
-            /* random spark directions */
-            for (uint8_t i = 0; i < SPARK_COUNT; i++)
-            {
-                int8_t dir = (fast_rand() % 5) - 2;  // -2 to +2
-                if (dir == 0) dir = 1;
-                fire.spark_dir[i] = dir;
-            }
-        }
-    }
-
-    /* ---------- EXPLOSION (SPARKLE) ---------- */
-    else if (fire.state == 2)
-    {
-        int16_t center = fire.rocket_pos;
-
-        /* draw sparks */
-        for (uint8_t s = 0; s < SPARK_COUNT; s++)
-        {
-            int16_t spark_pos =
-                center + (fire.spark_dir[s] * fire.radius);
-
-            /* wrap inside circle region (41–80) */
-            if (spark_pos < 41)
-                spark_pos = 41 + (spark_pos - 41 + 40) % 40;
-
-            if (spark_pos > 80)
-                spark_pos = 41 + (spark_pos - 41) % 40;
-
-            if (spark_pos >= 41 && spark_pos <= 80)
-            {
-                uint8_t r = fire.brightness;
-                uint8_t g = fire.brightness >> 3;
-                uint8_t b = 0;
-
-                ws2812_set_pixel(spark_pos, r, g, b);
-            }
-        }
-
-        /* grow outward */
-        if (fire.radius < fire.max_radius)
-        {
-            fire.radius += SPARK_GROW_SPEED;
-        }
-        else
-        {
-            /* fade */
-            if (fire.brightness > SPARK_FADE_SPEED)
-            {
-                fire.brightness -= SPARK_FADE_SPEED;
-            }
-            else
-            {
-                fire.state = 0;
-                fire.delay = FIRECRACKER_MIN_DELAY +
-                    (fast_rand() %
-                    (FIRECRACKER_MAX_DELAY - FIRECRACKER_MIN_DELAY));
-            }
+            /* finished */
+            c->active = 0;
         }
     }
 
