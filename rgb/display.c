@@ -29,6 +29,8 @@ static void render_anim_moon(void);
 static void render_anim_firecracker(void);
 static void render_anim_fill(void);
 static void render_anim_unfill(void);
+static void render_anim_fireflies(void);
+static void render_anim_rain(void);
 
 /* ============================= */
 /* Animation Tick Lengths       */
@@ -127,6 +129,14 @@ void display_update(void)
 
         case ANIM_UNFILL:
             render_anim_unfill();
+            break;
+
+        case ANIM_FIREFLIES:
+            render_anim_fireflies();
+            break;
+
+        case ANIM_RAIN:
+            render_anim_rain();
             break;
 
         default:
@@ -1047,6 +1057,261 @@ void render_anim_unfill(void)
                          clamp_u8(g),
                          clamp_u8(b));
     }
+}
+
+// --------------------------------------------------------------------------------------------------------- //
+// Fireflies (reworked using firefly_anim.c algorithm)                                                     //
+// --------------------------------------------------------------------------------------------------------- //
+
+#define FIREFLY_COUNT  8
+
+typedef struct
+{
+    uint8_t  active;
+    uint8_t  pos;
+    uint16_t age;
+    uint16_t life;
+    uint8_t  peak;
+    uint8_t  drift_tick;
+} firefly_t;
+
+static firefly_t fireflies[FIREFLY_COUNT];
+
+static void render_anim_fireflies(void)
+{
+    ws2812_clear();
+
+    /* ---------- RANDOM SPAWN ---------- */
+    if ((fast_rand() % 100) < 10)
+    {
+        for (uint8_t i = 0; i < FIREFLY_COUNT; i++)
+        {
+            if (!fireflies[i].active)
+            {
+                fireflies[i].active = 1;
+                fireflies[i].pos = fast_rand() % LED_COUNT;
+                fireflies[i].age = 0;
+                fireflies[i].life = 80 + (fast_rand() % 120);   // total glow duration
+                fireflies[i].peak = 140 + (fast_rand() % 90);   // max brightness
+                fireflies[i].drift_tick = 0;
+                break;
+            }
+        }
+    }
+
+    /* ---------- UPDATE + RENDER ---------- */
+    for (uint8_t i = 0; i < FIREFLY_COUNT; i++)
+    {
+        if (!fireflies[i].active)
+            continue;
+
+        fireflies[i].age++;
+
+        if (fireflies[i].age >= fireflies[i].life)
+        {
+            fireflies[i].active = 0;
+            continue;
+        }
+
+        /* Slow random drifting */
+        fireflies[i].drift_tick++;
+        if (fireflies[i].drift_tick >= 12)
+        {
+            fireflies[i].drift_tick = 0;
+
+            int8_t step = (fast_rand() % 3) - 1;   // -1,0,+1
+            int16_t np = fireflies[i].pos + step;
+
+            if (np >= 0 && np < LED_COUNT)
+                fireflies[i].pos = (uint8_t)np;
+        }
+
+        /* ---------- FADE ENVELOPE ---------- */
+        uint16_t half = fireflies[i].life >> 1;
+        uint8_t brightness;
+
+        if (fireflies[i].age <= half)
+        {
+            /* fade in */
+            brightness =
+                (uint32_t)fireflies[i].age *
+                fireflies[i].peak / half;
+        }
+        else
+        {
+            /* fade out */
+            brightness =
+                (uint32_t)(fireflies[i].life - fireflies[i].age) *
+                fireflies[i].peak / half;
+        }
+
+        /* soften the curve a bit */
+        brightness = (uint16_t)brightness * brightness / 255;
+
+        /* tiny shimmer near peak */
+        if (brightness > 80)
+            brightness += fast_rand() & 0x07;
+
+        if (brightness > 255)
+            brightness = 255;
+
+        /* ---------- WARM YELLOW-ORANGE COLOR ---------- */
+        uint8_t r = brightness;
+        uint8_t g = (uint16_t)brightness * 180 / 255;
+        uint8_t b = (uint16_t)brightness * 20  / 255;
+
+        uint8_t p = fireflies[i].pos;
+
+        /* center pixel */
+        ws2812_set_pixel(p, r, g, b);
+
+        /* soft halo */
+        if (p > 0)
+            ws2812_set_pixel(p - 1, r >> 3, g >> 3, b >> 4);
+
+        if (p < (LED_COUNT - 1))
+            ws2812_set_pixel(p + 1, r >> 3, g >> 3, b >> 4);
+    }
+
+    anim_tick++;
+}
+
+// --------------------------------------------------------------------------------------------------------- //
+// Rain (reworked using rain_anim.c algorithm)                                                             //
+// --------------------------------------------------------------------------------------------------------- //
+
+#define RAIN_TAIL_END                40
+#define RAIN_BOTTOM_POINT            63
+
+#define RAIN_SPAWN_CHANCE_AREA_1     6    // 0..35
+#define RAIN_SPAWN_CHANCE_AREA_2     8    // 40..50
+#define RAIN_SPAWN_CHANCE_AREA_3     8    // 70..80
+
+#define RAIN_TAIL_SPREAD_CHANCE      2
+#define RAIN_CIRCLE_GRAVITY_CHANCE   5
+
+#define RAIN_GLOBAL_EVAPORATION      0.97f
+#define RAIN_TRAIL_RETENTION         0.10f
+#define RAIN_POOL_EVAPORATION        0.55f
+
+#define RAIN_BASE_R                  30
+#define RAIN_BASE_G                  95
+#define RAIN_BASE_B                  150
+
+#define RAIN_BG_R                    2
+#define RAIN_BG_G                    6
+#define RAIN_BG_B                    12
+
+static float rain_layer[LED_COUNT] = {0};
+static float next_rain_frame[LED_COUNT] = {0};
+
+static uint8_t rand_range_u8(uint8_t min, uint8_t max)
+{
+    if (max <= min) return min;
+    return min + (fast_rand() % (max - min + 1));
+}
+
+static void render_anim_rain(void)
+{
+    uint8_t do_flow = ((anim_tick & 0x01) == 0);   // move only every 2nd frame
+
+    /* ---------- 1. ZONED SPAWN ---------- */
+    if (rand_range_u8(0, 100) < RAIN_SPAWN_CHANCE_AREA_1)
+        rain_layer[rand_range_u8(0, 35)] = 1.0f;
+
+    if (rand_range_u8(0, 100) < RAIN_SPAWN_CHANCE_AREA_2)
+        rain_layer[rand_range_u8(40, 55)] = 1.0f;
+
+    if (rand_range_u8(0, 100) < RAIN_SPAWN_CHANCE_AREA_3)
+        rain_layer[rand_range_u8(75, 80)] = 1.0f;
+
+    /* ---------- 2. BASE DRYING ---------- */
+    for (uint8_t i = 0; i < LED_COUNT; i++)
+    {
+        next_rain_frame[i] = rain_layer[i] * RAIN_GLOBAL_EVAPORATION;
+    }
+
+    /* ---------- 3. FLOW ---------- */
+    if (do_flow)
+    {
+        for (uint8_t i = 0; i < LED_COUNT; i++)
+        {
+            if (rain_layer[i] < 0.01f)
+                continue;
+
+            if (i <= RAIN_TAIL_END)
+            {
+                if (rand_range_u8(0, 10) < RAIN_TAIL_SPREAD_CHANCE)
+                {
+                    if (i > 0)
+                        next_rain_frame[i - 1] += rain_layer[i] * 0.25f;
+
+                    if (i < RAIN_TAIL_END)
+                        next_rain_frame[i + 1] += rain_layer[i] * 0.25f;
+
+                    next_rain_frame[i] *= 0.65f;
+                }
+            }
+            else
+            {
+                if (i == RAIN_BOTTOM_POINT)
+                {
+                    next_rain_frame[i] = rain_layer[i] * RAIN_POOL_EVAPORATION;
+                }
+                else
+                {
+                    if (rand_range_u8(0, 10) < RAIN_CIRCLE_GRAVITY_CHANCE)
+                    {
+                        int8_t direction = (i < RAIN_BOTTOM_POINT) ? 1 : -1;
+                        int16_t next_i = (int16_t)i + direction;
+
+                        if (next_i >= 0 && next_i < LED_COUNT)
+                            next_rain_frame[next_i] += rain_layer[i] * 0.60f;
+
+                        next_rain_frame[i] = rain_layer[i] * RAIN_TRAIL_RETENTION;
+                    }
+                }
+            }
+        }
+    }
+
+    /* ---------- 4. CLAMP ---------- */
+    for (uint8_t i = 0; i < LED_COUNT; i++)
+    {
+        if (next_rain_frame[i] > 1.0f)
+            rain_layer[i] = 1.0f;
+        else if (next_rain_frame[i] < 0.0f)
+            rain_layer[i] = 0.0f;
+        else
+            rain_layer[i] = next_rain_frame[i];
+    }
+
+    /* ---------- 5. RENDER ---------- */
+    for (uint8_t i = 0; i < LED_COUNT; i++)
+    {
+        float x = rain_layer[i];
+
+        uint16_t r = (uint16_t)(x * RAIN_BASE_R) + RAIN_BG_R;
+        uint16_t g = (uint16_t)(x * RAIN_BASE_G) + RAIN_BG_G;
+        uint16_t b = (uint16_t)(x * RAIN_BASE_B) + RAIN_BG_B;
+
+        /* very soft water sheen */
+        if (x > 0.60f)
+        {
+            uint8_t shine = (uint8_t)((x - 0.60f) * 70.0f);
+            r += (shine >> 2);
+            g += (shine >> 2);
+            b += (shine >> 3);
+        }
+
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
+
+        ws2812_set_pixel(i, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+    }
+
+    anim_tick++;
 }
 
 

@@ -19,6 +19,8 @@ typedef enum {
     ANIM_STARS,
     ANIM_MOON,
     ANIM_FIRECRACKER,
+    ANIM_FIREFLIES,
+    ANIM_RAIN,
     TOTAL_ANIMS
 } anim_t;
 
